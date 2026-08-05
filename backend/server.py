@@ -1,3 +1,4 @@
+import logging
 from threading import RLock
 from typing import Literal
 
@@ -40,6 +41,8 @@ app = FastAPI(
     ),
 )
 
+
+logger = logging.getLogger("uvicorn.error")
 
 # Flutter 앱에서 API를 호출할 수 있도록 허용합니다.
 # 개발 단계에서는 전체 허용으로 두고,
@@ -243,6 +246,8 @@ def analyze_route(
 
     global _latest_route_context
 
+    logger.info("[1] 경로 분석 시작")
+
     # 1. 출발지와 도착지 결정
     if origin_latitude is not None and origin_longitude is not None:
         origin = create_current_location_place(
@@ -250,39 +255,61 @@ def analyze_route(
             longitude=origin_longitude,
         )
     else:
+        logger.info("[2] 출발지 검색")
         origin = search_place(origin_text)
 
+    logger.info("[3] 도착지 검색")
     destination = search_place(destination_text)
 
     # 2. TMAP 경로 검색
+    logger.info("[4] TMAP 경로 요청")
     route = request_route(
         origin=origin,
         destination=destination,
     )
 
+    logger.info("[5] 경로 좌표 추출")
     route_coordinates = extract_route_coordinates(route)
+    logger.info("원본 경로 좌표 수: %d", len(route_coordinates))
+
+    # 응답 크기와 메모리 사용량을 줄이기 위해 경로 좌표 수를 제한합니다.
+    max_route_points = 500
+    if len(route_coordinates) > max_route_points:
+        step = max(1, len(route_coordinates) // max_route_points)
+        sampled_coordinates = route_coordinates[::step]
+
+        # 마지막 도착점은 반드시 포함합니다.
+        if sampled_coordinates[-1] != route_coordinates[-1]:
+            sampled_coordinates.append(route_coordinates[-1])
+    else:
+        sampled_coordinates = route_coordinates
+
     route_points = [
         {
             "latitude": latitude,
             "longitude": longitude,
         }
-        for longitude, latitude in route_coordinates
+        for longitude, latitude in sampled_coordinates
     ]
 
     summary = get_route_summary(route)
 
     # 3. 경로 통과지역 분석
+    logger.info("[6] 통과 지역 분석")
     regions = find_route_regions(route)
 
     # 4. 실제 경로 기준 실시간 교통정보 분석
+    logger.info("[7] 실시간 교통 분석")
     traffic_analysis = analyze_route_traffic(
         route=route,
         regions=regions,
     )
 
-    print("=== traffic_analysis 시작 ===")
-    print(traffic_analysis)
-    print("=== traffic_analysis 끝 ===")
+    logger.info(
+        "교통 분석 완료: regions=%d, congestion_segments=%d",
+        len(traffic_analysis.get("regions", [])),
+        len(traffic_analysis.get("congestion_segments", [])),
+    )
 
     regions = traffic_analysis["regions"]
 
@@ -308,6 +335,7 @@ def analyze_route(
         else "기타"
     )
 
+    logger.info("[8] 도로 데이터 로드")
     road_data = load_preprocessed_road_data()
     route_road_result = select_road_analysis(
         road_long_df=road_data["long"],
@@ -322,6 +350,7 @@ def analyze_route(
         route_road_result = route_road_result.iloc[0:0]
 
     # 6. 사고유형 분석
+    logger.info("[9] 사고 유형 데이터 로드")
     type_data = load_preprocessed_type_data()
     route_type_detail = select_type_analysis(
         type_long_df=type_data["detail_long"],
@@ -330,6 +359,7 @@ def analyze_route(
     )
 
     # 7. 시간대 분석
+    logger.info("[10] 시간대 데이터 로드")
     time_data = load_preprocessed_time_data()
     current_time_band = get_current_time_band()
     time_result = select_time_analysis(
@@ -345,6 +375,7 @@ def analyze_route(
         ].copy()
 
     # 8. 날씨별 사고 분석
+    logger.info("[11] 날씨 데이터 로드")
     weather_data = load_preprocessed_weather_data()
     weather_result = select_weather_analysis(
         weather_long_df=weather_data["long"],
@@ -359,6 +390,7 @@ def analyze_route(
         ].copy()
 
     # 9. 예측 모델 연결
+    logger.info("[12] 위험도 예측")
     regions = attach_risk_predictions(
         regions=regions,
         weather=weather,
@@ -367,6 +399,7 @@ def analyze_route(
     )
 
     # 10. 사용자용 안전안내 문장 생성
+    logger.info("[13] 사용자 메시지 생성")
     messages = create_user_messages(
         summary=summary,
         regions=regions,
@@ -392,8 +425,9 @@ def analyze_route(
             "origin": dict(origin),
             "destination": dict(destination),
             "summary": dict(summary),
-            "traffic_analysis": traffic_analysis,
         }
+
+    logger.info("[14] 경로 분석 응답 생성 완료")
 
     return {
         "origin": origin,
@@ -457,9 +491,13 @@ def analyze_route_endpoint(request: RouteAnalysisRequest):
             detail=f"데이터 파일 오류: {exc}",
         ) from exc
     except Exception as exc:
+        logger.exception("경로 분석 중 예외 발생")
         raise HTTPException(
             status_code=500,
-            detail=f"경로 분석 중 오류가 발생했습니다: {exc}",
+            detail=(
+                "경로 분석 중 오류가 발생했습니다: "
+                f"{type(exc).__name__}: {exc}"
+            ),
         ) from exc
 
 
