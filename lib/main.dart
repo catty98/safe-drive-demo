@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -594,6 +595,9 @@ class RouteResultScreen extends StatelessWidget {
                         builder: (context) => DrivingModeScreen(
                           initialMessages: messages,
                           routePoints: routePoints,
+                          startLocation: startLocation,
+                          destination: destination,
+                          weather: weather,
                         ),
                       ),
                     );
@@ -1040,10 +1044,16 @@ class DrivingModeScreen extends StatefulWidget {
     super.key,
     required this.initialMessages,
     required this.routePoints,
+    required this.startLocation,
+    required this.destination,
+    required this.weather,
   });
 
   final List<String> initialMessages;
   final List<LatLng> routePoints;
+  final String startLocation;
+  final String destination;
+  final String weather;
 
   @override
   State<DrivingModeScreen> createState() => _DrivingModeScreenState();
@@ -1075,6 +1085,7 @@ class _DrivingModeScreenState extends State<DrivingModeScreen> {
   bool _isDriving = false;
   bool _isStartingDriving = true;
   bool _isSendingLocation = false;
+  DateTime? _lastLocationSentAt;
   bool _isStoppingDriving = false;
   bool _isResting = false;
   bool _restAlert = false;
@@ -1124,19 +1135,67 @@ class _DrivingModeScreenState extends State<DrivingModeScreen> {
     });
   }
 
+  Future<http.Response> _requestStartDriving() {
+    return http
+        .post(
+          Uri.parse(startDrivingUrl),
+          headers: const {'Content-Type': 'application/json; charset=UTF-8'},
+          body: jsonEncode({
+            'refresh_seconds': 300,
+            'rest_confirm_seconds': 600,
+            'rest_alert_seconds': 3600,
+          }),
+        )
+        .timeout(const Duration(seconds: 60));
+  }
+
+  Future<void> _restoreRouteOnServer() async {
+    final requestBody = <String, dynamic>{
+      'origin': widget.startLocation,
+      'destination': widget.destination,
+      'weather': widget.weather,
+    };
+
+    // Render가 재시작되면 서버 메모리의 경로가 사라집니다.
+    // 출발지가 현재 위치라면 GPS 좌표까지 다시 전달해 경로를 복구합니다.
+    if (widget.startLocation.trim() == '현재 위치') {
+      final position = await determineCurrentPosition();
+      requestBody['origin_latitude'] = position.latitude;
+      requestBody['origin_longitude'] = position.longitude;
+    }
+
+    final response = await http
+        .post(
+          Uri.parse(analyzeRouteUrl),
+          headers: const {'Content-Type': 'application/json; charset=UTF-8'},
+          body: jsonEncode(requestBody),
+        )
+        .timeout(const Duration(seconds: 180));
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        _extractServerError(response, fallback: '서버의 경로 복구에 실패했습니다.'),
+      );
+    }
+  }
+
   Future<void> _startDriving() async {
     try {
-      final response = await http
-          .post(
-            Uri.parse(startDrivingUrl),
-            headers: const {'Content-Type': 'application/json; charset=UTF-8'},
-            body: jsonEncode({
-              'refresh_seconds': 300,
-              'rest_confirm_seconds': 600,
-              'rest_alert_seconds': 3600,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
+      var response = await _requestStartDriving();
+
+      // Render 무료 서버가 재시작되면 메모리에 저장한 분석 경로가 사라집니다.
+      // 이때 앱이 경로를 자동으로 다시 분석한 뒤 운전 시작을 한 번 재시도합니다.
+      if (response.statusCode == 409) {
+        final detail = _extractServerError(
+          response,
+          fallback: '운전 시작 준비가 필요합니다.',
+        );
+
+        if (detail.contains('/analyze-route') || detail.contains('경로를 분석')) {
+          await _restoreRouteOnServer();
+          response = await _requestStartDriving();
+        }
+      }
 
       if (response.statusCode != 200) {
         throw Exception(
@@ -1208,25 +1267,58 @@ class _DrivingModeScreenState extends State<DrivingModeScreen> {
       return;
     }
 
+    final now = DateTime.now();
+    if (!forceRefresh &&
+        _lastLocationSentAt != null &&
+        now.difference(_lastLocationSentAt!) < const Duration(seconds: 5)) {
+      return;
+    }
+
     _isSendingLocation = true;
+    _lastLocationSentAt = now;
 
     try {
       final speedKmh = position.speed.isFinite && position.speed > 0
           ? position.speed * 3.6
           : 0.0;
 
-      final response = await http
-          .post(
-            Uri.parse(updateLocationUrl),
-            headers: const {'Content-Type': 'application/json; charset=UTF-8'},
-            body: jsonEncode({
-              'latitude': position.latitude,
-              'longitude': position.longitude,
-              'speed_kmh': speedKmh,
-              'force_refresh': forceRefresh,
-            }),
-          )
-          .timeout(const Duration(seconds: 180));
+      http.Response? response;
+      Object? lastError;
+
+      for (var attempt = 1; attempt <= 2; attempt++) {
+        try {
+          response = await http
+              .post(
+                Uri.parse(updateLocationUrl),
+                headers: const {
+                  'Content-Type': 'application/json; charset=UTF-8',
+                  'Connection': 'close',
+                },
+                body: jsonEncode({
+                  'latitude': position.latitude,
+                  'longitude': position.longitude,
+                  'speed_kmh': speedKmh,
+                  'force_refresh': forceRefresh,
+                }),
+              )
+              .timeout(const Duration(seconds: 60));
+          break;
+        } on TimeoutException catch (error) {
+          lastError = error;
+        } on SocketException catch (error) {
+          lastError = error;
+        } on http.ClientException catch (error) {
+          lastError = error;
+        }
+
+        if (attempt < 2) {
+          await Future<void>.delayed(const Duration(seconds: 2));
+        }
+      }
+
+      if (response == null) {
+        throw lastError ?? Exception('서버에 연결하지 못했습니다.');
+      }
 
       if (response.statusCode != 200) {
         throw Exception(
@@ -1245,6 +1337,24 @@ class _DrivingModeScreenState extends State<DrivingModeScreen> {
         position: position,
         speedKmh: speedKmh,
       );
+    } on TimeoutException {
+      if (mounted) {
+        setState(() {
+          _drivingError = '서버 응답이 늦어 위치 갱신을 다시 시도합니다.';
+        });
+      }
+    } on SocketException {
+      if (mounted) {
+        setState(() {
+          _drivingError = '네트워크 연결이 일시적으로 끊겼습니다. 자동으로 다시 시도합니다.';
+        });
+      }
+    } on http.ClientException {
+      if (mounted) {
+        setState(() {
+          _drivingError = '서버 연결이 일시적으로 불안정합니다. 잠시 후 다시 시도합니다.';
+        });
+      }
     } catch (error) {
       if (mounted) {
         setState(() {

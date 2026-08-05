@@ -1,8 +1,6 @@
 import logging
-import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from functools import lru_cache
-from threading import RLock, Thread
+from threading import RLock
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -46,92 +44,6 @@ app = FastAPI(
 
 
 logger = logging.getLogger("uvicorn.error")
-
-
-# 통계 데이터는 요청마다 다시 읽지 않고 프로세스 메모리에 캐시합니다.
-# Render 인스턴스가 재시작되면 캐시는 자동으로 다시 생성됩니다.
-@lru_cache(maxsize=1)
-def get_cached_road_data():
-    started_at = time.perf_counter()
-    data = load_preprocessed_road_data()
-    logger.info(
-        "[CACHE] 도로 데이터 로드 완료: %.2f초",
-        time.perf_counter() - started_at,
-    )
-    return data
-
-
-@lru_cache(maxsize=1)
-def get_cached_type_data():
-    started_at = time.perf_counter()
-    data = load_preprocessed_type_data()
-    logger.info(
-        "[CACHE] 사고유형 데이터 로드 완료: %.2f초",
-        time.perf_counter() - started_at,
-    )
-    return data
-
-
-@lru_cache(maxsize=1)
-def get_cached_time_data():
-    started_at = time.perf_counter()
-    data = load_preprocessed_time_data()
-    logger.info(
-        "[CACHE] 시간대 데이터 로드 완료: %.2f초",
-        time.perf_counter() - started_at,
-    )
-    return data
-
-
-@lru_cache(maxsize=1)
-def get_cached_weather_data():
-    started_at = time.perf_counter()
-    data = load_preprocessed_weather_data()
-    logger.info(
-        "[CACHE] 날씨 데이터 로드 완료: %.2f초",
-        time.perf_counter() - started_at,
-    )
-    return data
-
-
-def warm_analysis_cache() -> None:
-    """서버 시작 후 통계 데이터를 백그라운드에서 미리 읽습니다."""
-
-    logger.info("[CACHE] 분석 데이터 사전 로드 시작")
-    started_at = time.perf_counter()
-
-    # 서로 독립적인 파일이므로 동시에 읽어 전체 준비 시간을 단축합니다.
-    with ThreadPoolExecutor(
-        max_workers=4,
-        thread_name_prefix="analysis-cache",
-    ) as executor:
-        futures = [
-            executor.submit(get_cached_road_data),
-            executor.submit(get_cached_type_data),
-            executor.submit(get_cached_time_data),
-            executor.submit(get_cached_weather_data),
-        ]
-
-        for future in futures:
-            try:
-                future.result()
-            except Exception:
-                logger.exception("[CACHE] 분석 데이터 사전 로드 실패")
-
-    logger.info(
-        "[CACHE] 분석 데이터 사전 로드 종료: %.2f초",
-        time.perf_counter() - started_at,
-    )
-
-
-@app.on_event("startup")
-def start_cache_warmup() -> None:
-    # 서버 시작 자체를 막지 않도록 백그라운드 스레드에서 준비합니다.
-    Thread(
-        target=warm_analysis_cache,
-        name="analysis-cache-warmup",
-        daemon=True,
-    ).start()
 
 # Flutter 앱에서 API를 호출할 수 있도록 허용합니다.
 # 개발 단계에서는 전체 허용으로 두고,
@@ -335,7 +247,6 @@ def analyze_route(
 
     global _latest_route_context
 
-    request_started_at = time.perf_counter()
     logger.info("[1] 경로 분석 시작")
 
     # 1. 출발지와 도착지 결정
@@ -365,7 +276,7 @@ def analyze_route(
     # 응답 크기와 메모리 사용량을 줄이기 위해 경로 좌표 수를 제한합니다.
     max_route_points = 500
     if len(route_coordinates) > max_route_points:
-        # 올림 나눗셈을 사용하여 실제로 최대 개수 이하가 되게 합니다.
+        # 올림 나눗셈을 사용해야 501~999개 좌표도 실제로 줄어듭니다.
         step = max(
             1,
             (len(route_coordinates) + max_route_points - 1)
@@ -394,10 +305,13 @@ def analyze_route(
     regions = find_route_regions(route)
 
     # 4. 실제 경로 기준 실시간 교통정보 분석
+    #
+    # Render 요청이 이 단계에서 장시간 대기하며 502/Failed to fetch가
+    # 발생하지 않도록 분석 시간을 제한합니다. 교통 분석이 실패하거나
+    # 제한 시간을 넘겨도 나머지 경로 분석은 계속 진행합니다.
     logger.info("[7] 실시간 교통 분석 시작")
-    traffic_started_at = time.perf_counter()
-    traffic_timeout_seconds = 10
 
+    traffic_timeout_seconds = 15
     traffic_executor = ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix="traffic-analysis",
@@ -413,23 +327,21 @@ def analyze_route(
             timeout=traffic_timeout_seconds,
         )
         logger.info(
-            "[7] 실시간 교통 분석 완료: %.2f초, regions=%d, "
-            "congestion_segments=%d",
-            time.perf_counter() - traffic_started_at,
+            "교통 분석 완료: regions=%d, congestion_segments=%d",
             len(traffic_analysis.get("regions", [])),
             len(traffic_analysis.get("congestion_segments", [])),
         )
     except FutureTimeoutError:
         traffic_future.cancel()
         logger.warning(
-            "[7] 실시간 교통 분석이 %d초를 초과했습니다. "
-            "통계·예측 분석은 계속 진행합니다.",
+            "[7] 실시간 교통 분석이 %d초를 초과하여 기본 결과로 진행합니다.",
             traffic_timeout_seconds,
         )
         traffic_analysis = {
             "regions": regions,
             "congestion_segments": [],
             "status": "timeout",
+            "message": "실시간 교통정보 분석 시간이 초과되었습니다.",
         }
     except Exception as exc:
         logger.exception("[7] 실시간 교통 분석 실패: %s", exc)
@@ -437,8 +349,13 @@ def analyze_route(
             "regions": regions,
             "congestion_segments": [],
             "status": "failed",
+            "message": (
+                "실시간 교통정보를 불러오지 못해 "
+                "기본 경로 분석으로 진행했습니다."
+            ),
         }
     finally:
+        # timeout이 발생해도 요청 처리가 작업 스레드를 기다리지 않게 합니다.
         traffic_executor.shutdown(wait=False, cancel_futures=True)
 
     analyzed_regions = traffic_analysis.get("regions")
@@ -469,9 +386,8 @@ def analyze_route(
         else "기타"
     )
 
-    logger.info("[8] 도로 데이터 분석 시작")
-    stage_started_at = time.perf_counter()
-    road_data = get_cached_road_data()
+    logger.info("[8] 도로 데이터 로드")
+    road_data = load_preprocessed_road_data()
     route_road_result = select_road_analysis(
         road_long_df=road_data["long"],
         sidos=route_sidos,
@@ -484,29 +400,18 @@ def analyze_route(
     else:
         route_road_result = route_road_result.iloc[0:0]
 
-    logger.info(
-        "[8] 도로 데이터 분석 완료: %.2f초",
-        time.perf_counter() - stage_started_at,
-    )
-
     # 6. 사고유형 분석
-    logger.info("[9] 사고 유형 분석 시작")
-    stage_started_at = time.perf_counter()
-    type_data = get_cached_type_data()
+    logger.info("[9] 사고 유형 데이터 로드")
+    type_data = load_preprocessed_type_data()
     route_type_detail = select_type_analysis(
         type_long_df=type_data["detail_long"],
         sidos=route_sidos,
         min_accidents_for_severity=30,
     )
-    logger.info(
-        "[9] 사고 유형 분석 완료: %.2f초",
-        time.perf_counter() - stage_started_at,
-    )
 
     # 7. 시간대 분석
-    logger.info("[10] 시간대 분석 시작")
-    stage_started_at = time.perf_counter()
-    time_data = get_cached_time_data()
+    logger.info("[10] 시간대 데이터 로드")
+    time_data = load_preprocessed_time_data()
     current_time_band = get_current_time_band()
     time_result = select_time_analysis(
         time_long_df=time_data["long"],
@@ -520,15 +425,9 @@ def analyze_route(
             time_result["시도"].isin(route_sidos)
         ].copy()
 
-    logger.info(
-        "[10] 시간대 분석 완료: %.2f초",
-        time.perf_counter() - stage_started_at,
-    )
-
     # 8. 날씨별 사고 분석
-    logger.info("[11] 날씨 분석 시작")
-    stage_started_at = time.perf_counter()
-    weather_data = get_cached_weather_data()
+    logger.info("[11] 날씨 데이터 로드")
+    weather_data = load_preprocessed_weather_data()
     weather_result = select_weather_analysis(
         weather_long_df=weather_data["long"],
         weather=weather,
@@ -541,28 +440,17 @@ def analyze_route(
             weather_result["시도"].isin(route_sidos)
         ].copy()
 
-    logger.info(
-        "[11] 날씨 분석 완료: %.2f초",
-        time.perf_counter() - stage_started_at,
-    )
-
     # 9. 예측 모델 연결
-    logger.info("[12] 위험도 예측 시작")
-    stage_started_at = time.perf_counter()
+    logger.info("[12] 위험도 예측")
     regions = attach_risk_predictions(
         regions=regions,
         weather=weather,
         current_time_band=current_time_band,
         main_road_type=main_road_type,
     )
-    logger.info(
-        "[12] 위험도 예측 완료: %.2f초",
-        time.perf_counter() - stage_started_at,
-    )
 
     # 10. 사용자용 안전안내 문장 생성
-    logger.info("[13] 사용자 메시지 생성 시작")
-    stage_started_at = time.perf_counter()
+    logger.info("[13] 사용자 메시지 생성")
     messages = create_user_messages(
         summary=summary,
         regions=regions,
@@ -579,10 +467,6 @@ def analyze_route(
         ),
         traffic_status=traffic_analysis,
     )
-    logger.info(
-        "[13] 사용자 메시지 생성 완료: %.2f초",
-        time.perf_counter() - stage_started_at,
-    )
 
     with _state_lock:
         _latest_route_context = {
@@ -594,10 +478,7 @@ def analyze_route(
             "summary": dict(summary),
         }
 
-    logger.info(
-        "[14] 경로 분석 응답 생성 완료: 전체 %.2f초",
-        time.perf_counter() - request_started_at,
-    )
+    logger.info("[14] 경로 분석 응답 생성 완료")
 
     return {
         "origin": origin,
@@ -728,11 +609,12 @@ def update_location(request: LocationUpdateRequest):
             speed_kmh=request.speed_kmh,
         )
 
+        # GPS 위치 갱신은 즉시 응답해야 하므로 교통/날씨 API 재조회와
+        # 분리합니다. 자동 갱신 여부 때문에 위치 응답을 기다리게 하지 않고,
+        # 사용자가 새로고침 버튼을 누른 경우에만 환경 정보를 재조회합니다.
         refresh_result = None
-        if request.force_refresh or controller.environment_refresh_due():
-            refresh_result = controller.refresh_environment(
-                force=request.force_refresh,
-            )
+        if request.force_refresh:
+            refresh_result = controller.refresh_environment(force=True)
             if refresh_result is not None:
                 with _state_lock:
                     _last_live_refresh = refresh_result
