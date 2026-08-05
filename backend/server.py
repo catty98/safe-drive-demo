@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from threading import RLock
 from typing import Literal
 
@@ -275,7 +276,12 @@ def analyze_route(
     # 응답 크기와 메모리 사용량을 줄이기 위해 경로 좌표 수를 제한합니다.
     max_route_points = 500
     if len(route_coordinates) > max_route_points:
-        step = max(1, len(route_coordinates) // max_route_points)
+        # 올림 나눗셈을 사용해야 501~999개 좌표도 실제로 줄어듭니다.
+        step = max(
+            1,
+            (len(route_coordinates) + max_route_points - 1)
+            // max_route_points,
+        )
         sampled_coordinates = route_coordinates[::step]
 
         # 마지막 도착점은 반드시 포함합니다.
@@ -299,19 +305,64 @@ def analyze_route(
     regions = find_route_regions(route)
 
     # 4. 실제 경로 기준 실시간 교통정보 분석
-    logger.info("[7] 실시간 교통 분석")
-    traffic_analysis = analyze_route_traffic(
+    #
+    # Render 요청이 이 단계에서 장시간 대기하며 502/Failed to fetch가
+    # 발생하지 않도록 분석 시간을 제한합니다. 교통 분석이 실패하거나
+    # 제한 시간을 넘겨도 나머지 경로 분석은 계속 진행합니다.
+    logger.info("[7] 실시간 교통 분석 시작")
+
+    traffic_timeout_seconds = 15
+    traffic_executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="traffic-analysis",
+    )
+    traffic_future = traffic_executor.submit(
+        analyze_route_traffic,
         route=route,
         regions=regions,
     )
 
-    logger.info(
-        "교통 분석 완료: regions=%d, congestion_segments=%d",
-        len(traffic_analysis.get("regions", [])),
-        len(traffic_analysis.get("congestion_segments", [])),
-    )
+    try:
+        traffic_analysis = traffic_future.result(
+            timeout=traffic_timeout_seconds,
+        )
+        logger.info(
+            "교통 분석 완료: regions=%d, congestion_segments=%d",
+            len(traffic_analysis.get("regions", [])),
+            len(traffic_analysis.get("congestion_segments", [])),
+        )
+    except FutureTimeoutError:
+        traffic_future.cancel()
+        logger.warning(
+            "[7] 실시간 교통 분석이 %d초를 초과하여 기본 결과로 진행합니다.",
+            traffic_timeout_seconds,
+        )
+        traffic_analysis = {
+            "regions": regions,
+            "congestion_segments": [],
+            "status": "timeout",
+            "message": "실시간 교통정보 분석 시간이 초과되었습니다.",
+        }
+    except Exception as exc:
+        logger.exception("[7] 실시간 교통 분석 실패: %s", exc)
+        traffic_analysis = {
+            "regions": regions,
+            "congestion_segments": [],
+            "status": "failed",
+            "message": (
+                "실시간 교통정보를 불러오지 못해 "
+                "기본 경로 분석으로 진행했습니다."
+            ),
+        }
+    finally:
+        # timeout이 발생해도 요청 처리가 작업 스레드를 기다리지 않게 합니다.
+        traffic_executor.shutdown(wait=False, cancel_futures=True)
 
-    regions = traffic_analysis["regions"]
+    analyzed_regions = traffic_analysis.get("regions")
+    if isinstance(analyzed_regions, list) and analyzed_regions:
+        regions = analyzed_regions
+    else:
+        traffic_analysis["regions"] = regions
 
     route_sidos: list[str] = []
 
