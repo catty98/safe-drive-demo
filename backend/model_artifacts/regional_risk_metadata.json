@@ -1,0 +1,21 @@
+{
+  "model_version": "regional-relative-risk-v1.0",
+  "model_name": "Ridge",
+  "target": "전국 평균 대비 시도별 상대 위험도",
+  "target_interpretation": "실시간 사고 확률이 아니라 과거 지역 집계 자료 기반 상대 지표",
+  "features": [
+    "악천후_사고구성비",
+    "야간_사고구성비",
+    "고속도로_사고구성비",
+    "보행자_사고구성비",
+    "추돌_사고구성비",
+    "log_추천대표교통량"
+  ],
+  "validation": "Leave-One-Out Cross Validation",
+  "selection_rule": "가장 낮은 LOOCV MAE",
+  "risk_grade_rule": {
+    "낮음": "상대 위험도 < 0.3694",
+    "보통": "0.3694 이상, 1.3178 미만",
+    "높음": "상대 위험도 >= 1.3178"
+  }
+}

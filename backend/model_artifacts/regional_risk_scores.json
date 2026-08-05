@@ -1,0 +1,259 @@
+{
+  "model_version": "regional-relative-risk-v1.0",
+  "model_name": "Ridge",
+  "low_cut": 0.36936768313898855,
+  "high_cut": 1.317760440138226,
+  "regions": [
+    {
+      "시도": "강원",
+      "relative_risk": 1.6942,
+      "risk_score": 100.0,
+      "risk_level": "높음",
+      "rank": 1,
+      "total_regions": 17,
+      "main_factors": [
+        "악천후 사고 구성비",
+        "고속도로 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "충북",
+      "relative_risk": 1.6568,
+      "risk_score": 94.1,
+      "risk_level": "높음",
+      "rank": 2,
+      "total_regions": 17,
+      "main_factors": [
+        "고속도로 사고 구성비",
+        "추돌 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "경북",
+      "relative_risk": 1.5687,
+      "risk_score": 88.2,
+      "risk_level": "높음",
+      "rank": 3,
+      "total_regions": 17,
+      "main_factors": [
+        "고속도로 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "경남",
+      "relative_risk": 1.5212,
+      "risk_score": 82.4,
+      "risk_level": "높음",
+      "rank": 4,
+      "total_regions": 17,
+      "main_factors": [
+        "고속도로 사고 구성비",
+        "보행자 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "전남",
+      "relative_risk": 1.3834,
+      "risk_score": 76.5,
+      "risk_level": "높음",
+      "rank": 5,
+      "total_regions": 17,
+      "main_factors": [],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "인천",
+      "relative_risk": 1.321,
+      "risk_score": 70.6,
+      "risk_level": "높음",
+      "rank": 6,
+      "total_regions": 17,
+      "main_factors": [
+        "추돌 사고 구성비",
+        "대표 교통량"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "전북",
+      "relative_risk": 1.139,
+      "risk_score": 64.7,
+      "risk_level": "보통",
+      "rank": 7,
+      "total_regions": 17,
+      "main_factors": [
+        "보행자 사고 구성비",
+        "악천후 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "충남",
+      "relative_risk": 1.1141,
+      "risk_score": 58.8,
+      "risk_level": "보통",
+      "rank": 8,
+      "total_regions": 17,
+      "main_factors": [
+        "추돌 사고 구성비",
+        "악천후 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "경기",
+      "relative_risk": 0.9332,
+      "risk_score": 52.9,
+      "risk_level": "보통",
+      "rank": 9,
+      "total_regions": 17,
+      "main_factors": [
+        "고속도로 사고 구성비",
+        "추돌 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "대구",
+      "relative_risk": 0.8992,
+      "risk_score": 47.1,
+      "risk_level": "보통",
+      "rank": 10,
+      "total_regions": 17,
+      "main_factors": [
+        "대표 교통량",
+        "야간 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "제주",
+      "relative_risk": 0.8762,
+      "risk_score": 41.2,
+      "risk_level": "보통",
+      "rank": 11,
+      "total_regions": 17,
+      "main_factors": [
+        "보행자 사고 구성비",
+        "야간 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "부산",
+      "relative_risk": 0.8386,
+      "risk_score": 35.3,
+      "risk_level": "보통",
+      "rank": 12,
+      "total_regions": 17,
+      "main_factors": [
+        "보행자 사고 구성비",
+        "대표 교통량"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "대전",
+      "relative_risk": 0.675,
+      "risk_score": 29.4,
+      "risk_level": "보통",
+      "rank": 13,
+      "total_regions": 17,
+      "main_factors": [
+        "대표 교통량",
+        "야간 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "세종",
+      "relative_risk": 0.64,
+      "risk_score": 23.5,
+      "risk_level": "보통",
+      "rank": 14,
+      "total_regions": 17,
+      "main_factors": [
+        "악천후 사고 구성비",
+        "대표 교통량"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "울산",
+      "relative_risk": 0.6308,
+      "risk_score": 17.6,
+      "risk_level": "보통",
+      "rank": 15,
+      "total_regions": 17,
+      "main_factors": [
+        "보행자 사고 구성비",
+        "야간 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "광주",
+      "relative_risk": 0.579,
+      "risk_score": 11.8,
+      "risk_level": "보통",
+      "rank": 16,
+      "total_regions": 17,
+      "main_factors": [
+        "대표 교통량",
+        "악천후 사고 구성비"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    },
+    {
+      "시도": "서울",
+      "relative_risk": 0.0,
+      "risk_score": 5.9,
+      "risk_level": "낮음",
+      "rank": 17,
+      "total_regions": 17,
+      "main_factors": [
+        "야간 사고 구성비",
+        "대표 교통량"
+      ],
+      "model_name": "Ridge",
+      "model_version": "regional-relative-risk-v1.0",
+      "basis": "시도별 과거 사고 통계와 주요도로 대표교통량을 이용한 지역 상대 위험 지표"
+    }
+  ]
+}

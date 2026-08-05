@@ -1,0 +1,8 @@
+.venv/
+.idea/
+.spyproject/
+__pycache__/
+*.pyc
+.env
+secret_config.py
+backend_structure.txt
