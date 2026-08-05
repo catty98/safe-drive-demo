@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
-const String apiBaseUrl = 'http://127.0.0.1:8000';
+const String apiBaseUrl = 'https://safe-drive-demo.onrender.com';
 
 const String analyzeRouteUrl = '$apiBaseUrl/analyze-route';
 const String startDrivingUrl = '$apiBaseUrl/start-driving';
