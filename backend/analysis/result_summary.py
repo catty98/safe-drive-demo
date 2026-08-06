@@ -1,6 +1,10 @@
 import pandas as pd
 
-from analysis.safety_message import create_safety_message
+from analysis.safety_message import (
+    create_condition_safety_message,
+    create_road_safety_message,
+    create_safety_message,
+)
 
 
 def _is_available(dataframe):
@@ -52,6 +56,56 @@ def _format_location_from_segment(segment):
         ]
         if value
     )
+
+
+def _display_accident_type(accident_type):
+    return str(accident_type or "").replace("_", " ").strip()
+
+
+def _find_top_accident_type(route_type_detail, sido):
+    """정체 구간의 시도와 같은 TAAS 사고유형 1위를 찾습니다."""
+
+    if not _is_available(route_type_detail) or not sido:
+        return None
+
+    required_columns = {"시도", "사고형태", "사고건수"}
+
+    if not required_columns.issubset(route_type_detail.columns):
+        return None
+
+    selected = route_type_detail[
+        (route_type_detail["시도"] == sido)
+        & (route_type_detail["사고건수"] > 0)
+    ].copy()
+
+    if selected.empty:
+        return None
+
+    # 세분류별 사고건수를 기준으로 해당 시도의 최다 유형을 선택합니다.
+    top_row = selected.sort_values(
+        by=["사고건수", "사고100건당_사망자수"],
+        ascending=[False, False],
+        na_position="last",
+    ).iloc[0]
+
+    return {
+        "사고형태": top_row["사고형태"],
+        "사고건수": float(top_row["사고건수"]),
+        "지역내_사고비중(%)": top_row.get("지역내_사고비중(%)"),
+    }
+
+
+def _build_congestion_accident_advice(segment, accident_type):
+    type_advice = create_safety_message(accident_type)
+    level = int(segment.get("congestion_level", 0) or 0)
+
+    if level >= 3 and accident_type != "차대차_추돌":
+        return (
+            "정체 꼬리의 급정지에 대비해 먼저 차간 거리를 확보하세요. "
+            + type_advice
+        )
+
+    return type_advice
 
 
 def _congestion_safety_advice(segment):
@@ -111,10 +165,11 @@ def _format_congestion_place(segment):
 
 def _format_congestion_messages(
     congestion_segments,
+    route_type_detail=None,
     traffic_status=None,
     maximum_messages=2,
 ):
-    """정체 안내 또는 교통정보 조회 상태를 반드시 한 문장으로 반환합니다."""
+    """정체 위치·상태·지역별 주요 사고유형·행동요령을 함께 반환합니다."""
 
     traffic_status = traffic_status or {}
 
@@ -138,20 +193,8 @@ def _format_congestion_messages(
         )
         or 0
     )
-    errors = traffic_status.get("traffic_errors") or []
-    status = str(traffic_status.get("status", "") or "").strip().lower()
 
     if not congestion_segments:
-        if status == "timeout":
-            return [
-                "실시간 교통정보는 수신했지만 경로 대조 분석 시간이 초과되어 정체 여부를 확정하지 못했습니다."
-            ]
-
-        if status == "failed":
-            return [
-                "실시간 교통정보 처리 중 오류가 발생해 정체 구간을 안내하지 못했습니다."
-            ]
-
         if query_count > 0 and success_count == 0:
             return [
                 "실시간 교통정보 조회에 실패해 정체 구간을 안내하지 못했습니다."
@@ -159,26 +202,23 @@ def _format_congestion_messages(
 
         if feature_count == 0:
             return [
-                "실시간 교통정보 응답에 도로 구간 데이터가 없어 정체 여부를 확인하지 못했습니다."
+                "실시간 교통정보에 도로 구간 데이터가 없어 정체 여부를 확인하지 못했습니다."
             ]
 
         if matched_count == 0:
             return [
-                "실시간 교통정보는 조회됐지만 현재 안내 경로와 일치하는 교통 구간을 찾지 못했습니다."
+                "실시간 교통정보는 조회됐지만 현재 경로와 일치하는 구간을 찾지 못했습니다."
             ]
 
         return [
-            "현재 경로에는 길게 이어지는 서행·지체·정체 구간이 확인되지 않았습니다."
+            "현재 경로에는 길게 이어지는 지체·정체 구간이 확인되지 않았습니다."
         ]
 
     meaningful = [
         segment
         for segment in congestion_segments
         if int(segment.get("congestion_level", 0)) >= 3
-        or float(
-            segment.get("congestion_distance_km", 0)
-            or 0
-        ) >= 1.0
+        or float(segment.get("congestion_distance_km", 0) or 0) >= 1.0
     ]
 
     if not meaningful:
@@ -186,16 +226,13 @@ def _format_congestion_messages(
             "현재 경로에는 길게 이어지는 지체·정체 구간이 확인되지 않았습니다."
         ]
 
+    # 운전자에게 먼저 닥칠 구간을 우선 안내합니다.
     selected = sorted(
         meaningful,
         key=lambda segment: (
-            int(segment.get("congestion_level", 0)),
-            float(
-                segment.get("congestion_distance_km", 0)
-                or 0
-            ),
+            float(segment.get("eta_minutes", 0) or 0),
+            -int(segment.get("congestion_level", 0) or 0),
         ),
-        reverse=True,
     )[:maximum_messages]
 
     messages = []
@@ -203,21 +240,22 @@ def _format_congestion_messages(
     for segment in selected:
         eta = round(float(segment.get("eta_minutes", 0) or 0))
         place = _format_congestion_place(segment)
-        congestion_name = segment.get(
-            "congestion_name",
-            "혼잡",
-        )
+        congestion_name = segment.get("congestion_name", "혼잡")
         distance_km = float(
-            segment.get("congestion_distance_km", 0)
-            or 0
+            segment.get("congestion_distance_km", 0) or 0
         )
         speed = segment.get("average_speed_kmh")
         traffic_time = segment.get("congestion_time_minutes")
 
-        parts = [
-            f"약 {eta}분 후 {place} 약 {distance_km:.1f}km 구간이 "
+        if eta <= 0:
+            prefix = f"현재 {place}"
+        else:
+            prefix = f"약 {eta}분 후 {place}"
+
+        message = (
+            f"{prefix} 약 {distance_km:.1f}km 구간이 "
             f"{congestion_name} 상태입니다"
-        ]
+        )
 
         details = []
 
@@ -225,36 +263,45 @@ def _format_congestion_messages(
             details.append(f"평균 속도 약 {float(speed):.0f}km/h")
 
         if traffic_time is not None and float(traffic_time) > 0:
-            details.append(
-                f"통과 예상 약 {float(traffic_time):.0f}분"
-            )
+            details.append(f"통과 예상 약 {float(traffic_time):.0f}분")
 
         if details:
-            parts.append("(" + ", ".join(details) + ")")
+            message += " (" + ", ".join(details) + ")"
 
-        message = " ".join(parts) + "."
-        advice = _congestion_safety_advice(segment)
+        message += "."
 
-        if advice:
-            message += " " + advice
+        sido = str(segment.get("시도", "")).strip()
+        top_type = _find_top_accident_type(
+            route_type_detail,
+            sido,
+        )
+
+        if top_type:
+            accident_type = top_type["사고형태"]
+            type_label = _display_accident_type(accident_type)
+            share = top_type.get("지역내_사고비중(%)")
+
+            message += (
+                f" {sido} 전체 사고 통계에서는 "
+                f"{type_label} 사고가 가장 많습니다"
+            )
+
+            if pd.notna(share):
+                message += f"(지역 사고의 {float(share):.1f}%)"
+
+            message += ". " + _build_congestion_accident_advice(
+                segment,
+                accident_type,
+            )
+        else:
+            advice = _congestion_safety_advice(segment)
+
+            if advice:
+                message += " " + advice
 
         messages.append(message)
 
     return messages
-
-
-
-def _classify_relative_risk(relative_risk):
-    """상대 위험도와 화면 표시 등급을 같은 기준으로 맞춥니다."""
-    value = float(relative_risk)
-
-    if value < 0.80:
-        return "낮음"
-    if value < 1.20:
-        return "보통"
-    if value < 1.60:
-        return "높음"
-    return "매우 높음"
 
 
 def _risk_sort_value(region):
@@ -279,7 +326,7 @@ def _risk_sort_value(region):
     )
 
 
-def _format_risk_message(regions):
+def _format_risk_message(regions, route_type_detail=None):
     available = [
         region
         for region in regions
@@ -291,41 +338,52 @@ def _format_risk_message(regions):
 
     highest = max(available, key=_risk_sort_value)
     location = _format_location(highest)
-    eta = round(float(highest.get("eta_minutes", 0)))
-    prefix = (
-        f"약 {eta}분 후 {location} 구간이 "
-        "이번 경로에서 가장 높은 상대 위험도로 분석되었습니다"
-    )
+    eta = round(float(highest.get("eta_minutes", 0) or 0))
+
+    if eta <= 0:
+        prefix = f"현재 {location} 구간의 예측 위험도가 가장 높습니다"
+    else:
+        prefix = (
+            f"약 {eta}분 후 {location} 구간의 예측 위험도가 "
+            "이번 경로에서 가장 높습니다"
+        )
 
     details = []
 
-    relative_risk = highest.get("relative_risk")
-    risk_level = highest.get("risk_level")
+    if highest.get("risk_level"):
+        details.append(f"위험 단계 {highest['risk_level']}")
 
-    if relative_risk is not None:
-        relative_risk = float(relative_risk)
-        risk_level = _classify_relative_risk(relative_risk)
-
-    if risk_level:
+    if highest.get("risk_score") is not None:
         details.append(
-            f"위험 단계 {risk_level}"
+            f"위험점수 {float(highest['risk_score']):.1f}점"
         )
 
-    if relative_risk is not None:
+    if highest.get("relative_risk") is not None:
         details.append(
-            "기준 대비 "
-            f"{relative_risk:.2f}배"
+            f"기준 대비 {float(highest['relative_risk']):.2f}배"
         )
-    elif highest.get("accident_probability") is not None:
-        details.append(
-            "모델 점수 "
-            f"{float(highest['accident_probability']) * 100:.2f}%"
-        )
+
+    message = prefix
 
     if details:
-        return prefix + "(" + ", ".join(details) + ")."
+        message += " (" + ", ".join(details) + ")"
 
-    return prefix + "."
+    message += "."
+
+    sido = str(highest.get("시도", "")).strip()
+    top_type = _find_top_accident_type(route_type_detail, sido)
+
+    if top_type:
+        accident_type = top_type["사고형태"]
+        message += (
+            f" {sido} 전체 통계에서 가장 많은 "
+            f"{_display_accident_type(accident_type)} 사고에 대비해 "
+            f"{create_safety_message(accident_type)}"
+        )
+    else:
+        message += " 진입 전에 속도를 낮추고 주변 차량과 보행자를 확인하세요."
+
+    return message
 
 
 def _format_road_message(
@@ -339,29 +397,25 @@ def _format_road_message(
     ]
 
     if not recognized:
-        return (
-            "경로의 도로 등급을 정확히 확인하지 못해 "
-            "도로 종류별 사고 정보는 안내에서 제외합니다."
-        )
+        return None
 
     main_road = recognized[0]
+    road_type = main_road["도로종류"]
+    message = (
+        f"경로에서 {road_type} 이용 비중이 "
+        f"약 {main_road['경로비중(%)']}%입니다. "
+        f"{create_road_safety_message(road_type)}"
+    )
 
     if not _is_available(route_road_result):
-        return (
-            f"도로명 기준으로 {main_road['도로종류']} 이용 비중이 "
-            f"약 {main_road['경로비중(%)']}%로 추정됩니다."
-        )
+        return message
 
     matched = route_road_result[
-        route_road_result["도로종류"]
-        == main_road["도로종류"]
+        route_road_result["도로종류"] == road_type
     ].copy()
 
     if matched.empty:
-        return (
-            f"도로명 기준으로 {main_road['도로종류']} 이용 비중이 "
-            f"약 {main_road['경로비중(%)']}%로 추정됩니다."
-        )
+        return message
 
     top_row = matched.sort_values(
         by="지역내_도로사고비중(%)",
@@ -369,10 +423,9 @@ def _format_road_message(
     ).iloc[0]
 
     return (
-        f"도로명 기준으로 {main_road['도로종류']} 이용 비중이 "
-        f"약 {main_road['경로비중(%)']}%로 추정되며, "
-        f"{top_row['시도']}에서는 이 도로의 사고 비중이 "
-        f"{top_row['지역내_도로사고비중(%)']}%입니다."
+        f"{top_row['시도']}에서는 {road_type} 사고가 지역 사고의 "
+        f"{float(top_row['지역내_도로사고비중(%)']):.1f}%를 차지합니다. "
+        f"{create_road_safety_message(road_type)}"
     )
 
 
@@ -422,9 +475,8 @@ def _format_time_message(
     ).iloc[0]
 
     return (
-        f"{top_row['시도']} 지역의 과거 사고 중 "
-        f"{current_time_band} 사고 구성비는 "
-        f"{top_row[value_column]}%입니다."
+        f"현재 {current_time_band}에는 {top_row['시도']}에서 "
+        f"하루 사고의 {top_row[value_column]}%가 발생합니다."
     )
 
 
@@ -446,9 +498,18 @@ def _format_weather_message(
     ).iloc[0]
 
     return (
-        f"{top_row['시도']} 지역의 과거 날씨별 사고 중 "
-        f"{weather} 날씨 사고 구성비는 "
-        f"{top_row[value_column]}%입니다."
+        f"{weather}일 때는 {top_row['시도']}에서 "
+        f"지역 사고의 {top_row[value_column]}%가 발생합니다."
+    )
+
+
+def _format_condition_message(
+    current_time_band,
+    weather,
+):
+    return (
+        f"현재 주행 조건은 {current_time_band}, {weather}입니다. "
+        f"{create_condition_safety_message(weather, current_time_band)}"
     )
 
 
@@ -465,7 +526,7 @@ def create_user_messages(
     congestion_segments=None,
     traffic_status=None,
 ):
-    """사용자에게 읽어 줄 최대 7개의 안내 문장을 만듭니다."""
+    """안전 행동요령을 우선한 최대 6개의 안내 문장을 만듭니다."""
 
     messages = [
         (
@@ -475,30 +536,26 @@ def create_user_messages(
         )
     ]
 
-    region_message = _format_region_timeline(regions)
-
-    if region_message:
-        messages.append(region_message)
-
+    # 앱에 통과 지역이 별도 카드로 표시되므로,
+    # 안전운전 안내에서는 중복 지역 나열보다 행동요령을 우선합니다.
     messages.extend(
         _format_congestion_messages(
             congestion_segments or [],
+            route_type_detail=route_type_detail,
             traffic_status=traffic_status,
             maximum_messages=2,
         )
     )
 
     candidates = [
-        _format_risk_message(regions),
-        _format_time_message(
-            route_time_result,
-            current_time_band,
+        _format_risk_message(
+            regions,
+            route_type_detail=route_type_detail,
         ),
-        _format_weather_message(
-            route_weather_result,
+        _format_condition_message(
+            current_time_band,
             weather,
         ),
-        _format_type_message(route_type_detail),
         _format_road_message(
             route_road_summary,
             route_road_result,
@@ -506,8 +563,7 @@ def create_user_messages(
     ]
 
     for message in candidates:
-        if message:
+        if message and message not in messages:
             messages.append(message)
 
-    return messages[:7]
-
+    return messages[:6]
