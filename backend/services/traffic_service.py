@@ -559,7 +559,7 @@ def _normalize_traffic_features(
 
 def _reduce_timeline(
     timeline: list[dict[str, float]],
-    maximum_points: int = 900,
+    maximum_points: int = 160,
 ) -> list[dict[str, float]]:
     if len(timeline) <= maximum_points:
         return timeline
@@ -571,6 +571,47 @@ def _reduce_timeline(
         reduced.append(timeline[-1])
 
     return reduced
+
+
+def _filter_links_by_route_bounds(
+    links: list[dict[str, Any]],
+    timeline: list[dict[str, float]],
+    margin_degrees: float = 0.012,
+) -> list[dict[str, Any]]:
+    """경로 경계에서 멀리 떨어진 링크를 정밀 대조 전에 제외합니다."""
+
+    if not links or not timeline:
+        return []
+
+    route_lons = [float(point["longitude"]) for point in timeline]
+    route_lats = [float(point["latitude"]) for point in timeline]
+
+    min_lon = min(route_lons) - margin_degrees
+    max_lon = max(route_lons) + margin_degrees
+    min_lat = min(route_lats) - margin_degrees
+    max_lat = max(route_lats) + margin_degrees
+
+    filtered = []
+
+    for link in links:
+        coordinates = link.get("coordinates", [])
+        if not coordinates:
+            continue
+
+        link_lons = [float(point[0]) for point in coordinates]
+        link_lats = [float(point[1]) for point in coordinates]
+
+        if (
+            max(link_lons) < min_lon
+            or min(link_lons) > max_lon
+            or max(link_lats) < min_lat
+            or min(link_lats) > max_lat
+        ):
+            continue
+
+        filtered.append(link)
+
+    return filtered
 
 
 def _match_link_to_route(
@@ -1123,6 +1164,17 @@ def analyze_route_traffic(
         )
 
     reduced_timeline = _reduce_timeline(timeline)
+    traffic_links = _filter_links_by_route_bounds(
+        traffic_links,
+        reduced_timeline,
+    )
+
+    logger.info(
+        "[traffic] 경로 주변 필터 후 features=%d, timeline_points=%d",
+        len(traffic_links),
+        len(reduced_timeline),
+    )
+
     matched_links = []
 
     total_links = len(traffic_links)
