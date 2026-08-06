@@ -432,7 +432,7 @@ def analyze_route(
     # 제한 시간을 넘겨도 나머지 경로 분석은 계속 진행합니다.
     logger.info("[7] 실시간 교통 분석 시작")
 
-    traffic_timeout_seconds = 15
+    traffic_timeout_seconds = 25
     traffic_executor = ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix="traffic-analysis",

@@ -2,6 +2,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
 )
+import logging
 import math
 from typing import Any, Callable
 
@@ -13,6 +14,9 @@ from config import (
     TMAP_TRAFFIC_URL,
 )
 from services.route_service import extract_route_timeline
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 CONGESTION_NAMES = {
@@ -93,7 +97,7 @@ def request_traffic_near_point(
             TMAP_TRAFFIC_URL,
             headers=headers,
             params=params,
-            timeout=20,
+            timeout=(3.05, 7),
         )
     except requests.RequestException as exc:
         raise TmapTrafficError(
@@ -1006,10 +1010,10 @@ def _attach_traffic_to_regions(
 def analyze_route_traffic(
     route: dict[str, Any],
     regions: list[dict[str, Any]],
-    spacing_km: float = 3.0,
+    spacing_km: float = 4.0,
     radius_km: float = 2.0,
-    maximum_queries: int = 18,
-    max_workers: int = 5,
+    maximum_queries: int = 10,
+    max_workers: int = 4,
     max_match_distance_m: float = 250,
     start_route_distance_m: float = 0.0,
     progress_callback: ProgressCallback | None = None,
@@ -1097,26 +1101,27 @@ def analyze_route_traffic(
     )
     traffic_links = _normalize_traffic_features(payloads)
 
-    print("=== 실시간 교통 디버그 ===")
-    print("조회 지점 수:", len(query_points))
-    print("응답 payload 수:", len(payloads))
-    print("조회 오류 수:", len(errors))
-    print("조회 오류:", errors)
-    print("정규화된 traffic_links 수:", len(traffic_links))
+    logger.info(
+        "[traffic] query_points=%d payloads=%d errors=%d features=%d",
+        len(query_points),
+        len(payloads),
+        len(errors),
+        len(traffic_links),
+    )
 
-    if payloads:
-        first_payload = payloads[0]
-        print("첫 payload 타입:", type(first_payload))
+    if errors:
+        logger.warning(
+            "[traffic] 일부 TMAP 조회 실패: %s",
+            errors[:3],
+        )
 
-        if isinstance(first_payload, dict):
-            print("첫 payload 키:", list(first_payload.keys()))
-            print("첫 payload 일부:", str(first_payload)[:2000])
-        else:
-            print("첫 payload 일부:", str(first_payload)[:2000])
+    if payloads and isinstance(payloads[0], dict):
+        logger.info(
+            "[traffic] 첫 응답 키=%s, features=%d",
+            list(payloads[0].keys()),
+            len(payloads[0].get("features", [])),
+        )
 
-    print("==========================")
-
-    reduced_timeline = _reduce_timeline(timeline)
     reduced_timeline = _reduce_timeline(timeline)
     matched_links = []
 
