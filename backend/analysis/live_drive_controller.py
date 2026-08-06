@@ -44,6 +44,7 @@ class LiveDriveController:
         self.driving_started_at = now
         self.last_moving_at = now
         self.last_refresh_at = now
+        self.last_weather_refresh_at = None
 
         self.last_location = None
         self.current_progress = None
@@ -194,6 +195,57 @@ class LiveDriveController:
             "rest_alert": rest_alert,
         }
 
+    def weather_refresh_due(self):
+        return (
+            self.last_location is not None
+            and (
+                self.last_weather_refresh_at is None
+                or time.monotonic() - self.last_weather_refresh_at
+                >= self.refresh_seconds
+            )
+        )
+
+    def refresh_weather(self, force=False):
+        """현재 GPS 위치의 날씨만 갱신합니다. 교통 분석은 실행하지 않습니다."""
+
+        if self.last_location is None:
+            raise RuntimeError(
+                "현재 위치가 없어 실시간 날씨를 갱신할 수 없습니다."
+            )
+
+        if not force and not self.weather_refresh_due():
+            return None
+
+        previous_weather = self.current_weather
+        weather_error = None
+        weather_source = "previous"
+
+        if callable(self.weather_loader):
+            try:
+                loaded_weather = self.weather_loader(
+                    self.last_location["longitude"],
+                    self.last_location["latitude"],
+                )
+
+                if loaded_weather is not None:
+                    self.current_weather = self._normalize_weather_result(
+                        loaded_weather
+                    )
+                    weather_source = "api"
+            except Exception as exc:
+                weather_error = str(exc)
+                self.current_weather = previous_weather
+
+        self.last_weather_refresh_at = time.monotonic()
+
+        return {
+            "previous_weather": previous_weather,
+            "weather": self.current_weather,
+            "weather_changed": previous_weather != self.current_weather,
+            "weather_source": weather_source,
+            "weather_error": weather_error,
+        }
+
     def environment_refresh_due(self):
         return (
             self.last_location is not None
@@ -216,28 +268,16 @@ class LiveDriveController:
         if not force and not self.environment_refresh_due():
             return None
 
-        weather_error = None
-        previous_weather = self.current_weather
-        weather_source = "previous"
-
-        if callable(self.weather_loader):
-            try:
-                loaded_weather = self.weather_loader(
-                    self.last_location["longitude"],
-                    self.last_location["latitude"],
-                )
-
-                if loaded_weather is not None:
-                    self.current_weather = (
-                        self._normalize_weather_result(
-                            loaded_weather
-                        )
-                    )
-                    weather_source = "api"
-            except Exception as exc:
-                weather_error = str(exc)
-                self.current_weather = previous_weather
-                weather_source = "previous"
+        weather_result = self.refresh_weather(force=True) or {}
+        previous_weather = weather_result.get(
+            "previous_weather",
+            self.current_weather,
+        )
+        weather_source = weather_result.get(
+            "weather_source",
+            "previous",
+        )
+        weather_error = weather_result.get("weather_error")
 
         start_route_distance_m = 0.0
 

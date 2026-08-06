@@ -493,6 +493,18 @@ def _normalize_traffic_features(
             if len(valid_coordinates) < 2:
                 continue
 
+            if len(valid_coordinates) > 24:
+                step = max(
+                    1,
+                    math.ceil(len(valid_coordinates) / 24),
+                )
+                simplified_coordinates = valid_coordinates[::step]
+
+                if simplified_coordinates[-1] != valid_coordinates[-1]:
+                    simplified_coordinates.append(valid_coordinates[-1])
+
+                valid_coordinates = simplified_coordinates
+
             link_id = str(
                 _property(properties, "id", "") or ""
             ).strip()
@@ -559,7 +571,7 @@ def _normalize_traffic_features(
 
 def _reduce_timeline(
     timeline: list[dict[str, float]],
-    maximum_points: int = 160,
+    maximum_points: int = 80,
 ) -> list[dict[str, float]]:
     if len(timeline) <= maximum_points:
         return timeline
@@ -1051,9 +1063,9 @@ def _attach_traffic_to_regions(
 def analyze_route_traffic(
     route: dict[str, Any],
     regions: list[dict[str, Any]],
-    spacing_km: float = 4.0,
-    radius_km: float = 2.0,
-    maximum_queries: int = 10,
+    spacing_km: float = 5.0,
+    radius_km: float = 1.2,
+    maximum_queries: int = 8,
     max_workers: int = 4,
     max_match_distance_m: float = 250,
     start_route_distance_m: float = 0.0,

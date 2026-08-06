@@ -139,8 +139,19 @@ def _format_congestion_messages(
         or 0
     )
     errors = traffic_status.get("traffic_errors") or []
+    status = str(traffic_status.get("status", "") or "").strip().lower()
 
     if not congestion_segments:
+        if status == "timeout":
+            return [
+                "실시간 교통정보는 수신했지만 경로 대조 분석 시간이 초과되어 정체 여부를 확정하지 못했습니다."
+            ]
+
+        if status == "failed":
+            return [
+                "실시간 교통정보 처리 중 오류가 발생해 정체 구간을 안내하지 못했습니다."
+            ]
+
         if query_count > 0 and success_count == 0:
             return [
                 "실시간 교통정보 조회에 실패해 정체 구간을 안내하지 못했습니다."

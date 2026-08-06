@@ -432,7 +432,7 @@ def analyze_route(
     # 제한 시간을 넘겨도 나머지 경로 분석은 계속 진행합니다.
     logger.info("[7] 실시간 교통 분석 시작")
 
-    traffic_timeout_seconds = 25
+    traffic_timeout_seconds = 15
     traffic_executor = ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix="traffic-analysis",
@@ -810,15 +810,26 @@ def update_location(request: LocationUpdateRequest):
             speed_kmh=request.speed_kmh,
         )
 
-        # GPS 위치 갱신은 즉시 응답해야 하므로 교통/날씨 API 재조회와
-        # 분리합니다. 자동 갱신 여부 때문에 위치 응답을 기다리게 하지 않고,
-        # 사용자가 새로고침 버튼을 누른 경우에만 환경 정보를 재조회합니다.
+        # 일반 GPS 갱신에서는 가벼운 현재 날씨만 자동 갱신합니다.
+        # 강제 새로고침에서는 refresh_environment()가 날씨와 교통을
+        # 각각 한 번씩만 처리하도록 날씨 단독 호출을 먼저 하지 않습니다.
         refresh_result = None
+
         if request.force_refresh:
             refresh_result = controller.refresh_environment(force=True)
-            if refresh_result is not None:
-                with _state_lock:
-                    _last_live_refresh = refresh_result
+        else:
+            weather_result = controller.refresh_weather(force=False)
+
+            if weather_result is not None:
+                refresh_result = {
+                    **weather_result,
+                    "traffic": None,
+                    "messages": [],
+                }
+
+        if refresh_result is not None:
+            with _state_lock:
+                _last_live_refresh = refresh_result
 
         messages = _build_live_messages(
             location_status=location_status,
