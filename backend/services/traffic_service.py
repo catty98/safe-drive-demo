@@ -493,10 +493,10 @@ def _normalize_traffic_features(
             if len(valid_coordinates) < 2:
                 continue
 
-            if len(valid_coordinates) > 24:
+            if len(valid_coordinates) > 12:
                 step = max(
                     1,
-                    math.ceil(len(valid_coordinates) / 24),
+                    math.ceil(len(valid_coordinates) / 12),
                 )
                 simplified_coordinates = valid_coordinates[::step]
 
@@ -571,7 +571,7 @@ def _normalize_traffic_features(
 
 def _reduce_timeline(
     timeline: list[dict[str, float]],
-    maximum_points: int = 80,
+    maximum_points: int = 40,
 ) -> list[dict[str, float]]:
     if len(timeline) <= maximum_points:
         return timeline
@@ -588,7 +588,7 @@ def _reduce_timeline(
 def _filter_links_by_route_corridor(
     links: list[dict[str, Any]],
     timeline: list[dict[str, float]],
-    corridor_distance_m: float = 700.0,
+    corridor_distance_m: float = 450.0,
 ) -> list[dict[str, Any]]:
     """경로 주변 회랑에서 멀리 떨어진 링크를 정밀 대조 전에 제외합니다.
 
@@ -1205,7 +1205,7 @@ def analyze_route_traffic(
     traffic_links = _filter_links_by_route_corridor(
         traffic_links,
         reduced_timeline,
-        corridor_distance_m=700.0,
+        corridor_distance_m=450.0,
     )
 
     logger.info(
