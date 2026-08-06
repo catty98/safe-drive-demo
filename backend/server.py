@@ -1,4 +1,8 @@
+import gc
 import logging
+import math
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from threading import RLock
 from typing import Literal
@@ -143,20 +147,118 @@ _latest_route_context: dict | None = None
 _live_controller: LiveDriveController | None = None
 _last_live_refresh: dict | None = None
 
+# Render 무료 인스턴스의 512MB 메모리 제한을 고려한 선택적 지연 캐시입니다.
+#
+# 기본값은 상대적으로 작은 time, weather 데이터만 캐시합니다.
+# road, type 데이터는 분석 요청 때만 읽고 해당 요청이 끝나면 메모리에서 해제합니다.
+#
+# Render Environment에서 다음처럼 변경할 수 있습니다.
+# STAT_DATA_CACHE_KEYS=time,weather
+# STAT_DATA_CACHE_KEYS=            -> 캐시 사용 안 함
+# STAT_DATA_CACHE_KEYS=road,type,time,weather -> 전체 캐시(메모리 충분할 때만)
+_data_cache_lock = RLock()
+_data_cache: dict[str, object] = {}
+
+_allowed_cache_keys = {"road", "type", "time", "weather"}
+_configured_cache_keys = {
+    item.strip().lower()
+    for item in os.getenv(
+        "STAT_DATA_CACHE_KEYS",
+        "time,weather",
+    ).split(",")
+    if item.strip()
+}
+_data_cache_keys = _configured_cache_keys & _allowed_cache_keys
+
+
+def _get_statistics_data(cache_key: str, loader):
+    """필요할 때 데이터를 읽고, 설정된 항목만 프로세스 메모리에 보관합니다."""
+
+    should_cache = cache_key in _data_cache_keys
+
+    if should_cache:
+        with _data_cache_lock:
+            cached = _data_cache.get(cache_key)
+
+        if cached is not None:
+            logger.info("[cache] %s 통계 데이터 재사용", cache_key)
+            return cached
+
+    load_started_at = time.perf_counter()
+    loaded = loader()
+
+    logger.info(
+        "[data] %s 통계 데이터 지연 로드 완료 - %.2f초",
+        cache_key,
+        time.perf_counter() - load_started_at,
+    )
+
+    if not should_cache:
+        return loaded
+
+    with _data_cache_lock:
+        existing = _data_cache.get(cache_key)
+        if existing is not None:
+            return existing
+
+        _data_cache[cache_key] = loaded
+
+    logger.info("[cache] %s 통계 데이터 캐시 저장", cache_key)
+    return loaded
+
+
+@app.on_event("startup")
+def startup_event():
+    """서버 시작 시 대형 통계 파일을 읽지 않고 즉시 요청을 받을 준비를 합니다."""
+
+    logger.info(
+        "[startup] 통계 데이터는 지연 로드합니다. 캐시 대상=%s",
+        sorted(_data_cache_keys),
+    )
+
+
+def _json_safe(value):
+    """NaN, infinity, NumPy scalar 등을 JSON 직렬화 가능한 값으로 변환합니다."""
+
+    if value is None:
+        return None
+
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (TypeError, ValueError):
+            pass
+
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+
+    return value
+
 
 def dataframe_to_records(dataframe) -> list[dict]:
-    """Pandas DataFrame을 JSON으로 반환 가능한 리스트로 변환합니다."""
+    """Pandas DataFrame을 JSON으로 안전하게 반환 가능한 리스트로 변환합니다."""
 
     if dataframe is None or dataframe.empty:
         return []
 
-    clean_dataframe = dataframe.copy()
+    clean_dataframe = dataframe.copy().astype(object)
     clean_dataframe = clean_dataframe.where(
         clean_dataframe.notna(),
         None,
     )
 
-    return clean_dataframe.to_dict(orient="records")
+    return _json_safe(clean_dataframe.to_dict(orient="records"))
 
 
 def create_current_location_place(
@@ -247,6 +349,20 @@ def analyze_route(
 
     global _latest_route_context
 
+    request_started_at = time.perf_counter()
+    last_step_at = request_started_at
+
+    def log_step(step_name: str) -> None:
+        nonlocal last_step_at
+        now = time.perf_counter()
+        logger.info(
+            "%s - 단계 %.2f초 / 누적 %.2f초",
+            step_name,
+            now - last_step_at,
+            now - request_started_at,
+        )
+        last_step_at = now
+
     logger.info("[1] 경로 분석 시작")
 
     # 1. 출발지와 도착지 결정
@@ -259,8 +375,10 @@ def analyze_route(
         logger.info("[2] 출발지 검색")
         origin = search_place(origin_text)
 
+    log_step("[2] 출발지 결정 완료")
     logger.info("[3] 도착지 검색")
     destination = search_place(destination_text)
+    log_step("[3] 도착지 검색 완료")
 
     # 2. TMAP 경로 검색
     logger.info("[4] TMAP 경로 요청")
@@ -268,6 +386,7 @@ def analyze_route(
         origin=origin,
         destination=destination,
     )
+    log_step("[4] TMAP 경로 요청 완료")
 
     logger.info("[5] 경로 좌표 추출")
     route_coordinates = extract_route_coordinates(route)
@@ -299,10 +418,12 @@ def analyze_route(
     ]
 
     summary = get_route_summary(route)
+    log_step("[5] 경로 좌표 및 요약 생성 완료")
 
     # 3. 경로 통과지역 분석
     logger.info("[6] 통과 지역 분석")
     regions = find_route_regions(route)
+    log_step("[6] 통과 지역 분석 완료")
 
     # 4. 실제 경로 기준 실시간 교통정보 분석
     #
@@ -358,6 +479,8 @@ def analyze_route(
         # timeout이 발생해도 요청 처리가 작업 스레드를 기다리지 않게 합니다.
         traffic_executor.shutdown(wait=False, cancel_futures=True)
 
+    log_step("[7] 실시간 교통 분석 종료")
+
     analyzed_regions = traffic_analysis.get("regions")
     if isinstance(analyzed_regions, list) and analyzed_regions:
         regions = analyzed_regions
@@ -387,7 +510,7 @@ def analyze_route(
     )
 
     logger.info("[8] 도로 데이터 로드")
-    road_data = load_preprocessed_road_data()
+    road_data = _get_statistics_data("road", load_preprocessed_road_data)
     route_road_result = select_road_analysis(
         road_long_df=road_data["long"],
         sidos=route_sidos,
@@ -400,18 +523,27 @@ def analyze_route(
     else:
         route_road_result = route_road_result.iloc[0:0]
 
+    # road가 캐시 대상이 아니면 원본 전체 DataFrame 참조를 즉시 해제합니다.
+    del road_data
+    gc.collect()
+    log_step("[8] 도로 데이터 분석 완료")
+
     # 6. 사고유형 분석
     logger.info("[9] 사고 유형 데이터 로드")
-    type_data = load_preprocessed_type_data()
+    type_data = _get_statistics_data("type", load_preprocessed_type_data)
     route_type_detail = select_type_analysis(
         type_long_df=type_data["detail_long"],
         sidos=route_sidos,
         min_accidents_for_severity=30,
     )
+    # type이 캐시 대상이 아니면 원본 전체 DataFrame 참조를 즉시 해제합니다.
+    del type_data
+    gc.collect()
+    log_step("[9] 사고 유형 데이터 분석 완료")
 
     # 7. 시간대 분석
     logger.info("[10] 시간대 데이터 로드")
-    time_data = load_preprocessed_time_data()
+    time_data = _get_statistics_data("time", load_preprocessed_time_data)
     current_time_band = get_current_time_band()
     time_result = select_time_analysis(
         time_long_df=time_data["long"],
@@ -425,9 +557,12 @@ def analyze_route(
             time_result["시도"].isin(route_sidos)
         ].copy()
 
+    del time_data
+    log_step("[10] 시간대 데이터 분석 완료")
+
     # 8. 날씨별 사고 분석
     logger.info("[11] 날씨 데이터 로드")
-    weather_data = load_preprocessed_weather_data()
+    weather_data = _get_statistics_data("weather", load_preprocessed_weather_data)
     weather_result = select_weather_analysis(
         weather_long_df=weather_data["long"],
         weather=weather,
@@ -440,33 +575,81 @@ def analyze_route(
             weather_result["시도"].isin(route_sidos)
         ].copy()
 
+    del weather_data
+    log_step("[11] 날씨 데이터 분석 완료")
+
     # 9. 예측 모델 연결
-    logger.info("[12] 위험도 예측")
-    regions = attach_risk_predictions(
-        regions=regions,
-        weather=weather,
-        current_time_band=current_time_band,
-        main_road_type=main_road_type,
-    )
+    logger.info("[12] 위험도 예측 시작")
+    original_regions = [dict(region) for region in regions]
+
+    try:
+        predicted_regions = attach_risk_predictions(
+            regions=original_regions,
+            weather=weather,
+            current_time_band=current_time_band,
+            main_road_type=main_road_type,
+        )
+
+        if not isinstance(predicted_regions, list):
+            raise TypeError(
+                "attach_risk_predictions 반환값이 list가 아닙니다."
+            )
+
+        regions = predicted_regions
+        logger.info("[12] 위험도 예측 완료")
+    except Exception:
+        # 예측 실패 때문에 앞 단계의 경로·통계 결과 전체를 잃지 않습니다.
+        logger.exception(
+            "[12] 위험도 예측 실패 - 기본 지역 결과를 사용합니다."
+        )
+        regions = original_regions
+
+    log_step("[12] 위험도 예측 단계 종료")
 
     # 10. 사용자용 안전안내 문장 생성
-    logger.info("[13] 사용자 메시지 생성")
-    messages = create_user_messages(
-        summary=summary,
-        regions=regions,
-        route_road_summary=route_road_summary,
-        route_road_result=route_road_result,
-        route_type_detail=route_type_detail,
-        route_time_result=route_time_result,
-        current_time_band=current_time_band,
-        route_weather_result=route_weather_result,
-        weather=weather,
-        congestion_segments=traffic_analysis.get(
-            "congestion_segments",
-            [],
-        ),
-        traffic_status=traffic_analysis,
-    )
+    logger.info("[13] 사용자 메시지 생성 시작")
+
+    try:
+        messages = create_user_messages(
+            summary=summary,
+            regions=regions,
+            route_road_summary=route_road_summary,
+            route_road_result=route_road_result,
+            route_type_detail=route_type_detail,
+            route_time_result=route_time_result,
+            current_time_band=current_time_band,
+            route_weather_result=route_weather_result,
+            weather=weather,
+            congestion_segments=traffic_analysis.get(
+                "congestion_segments",
+                [],
+            ),
+            traffic_status=traffic_analysis,
+        )
+
+        if not isinstance(messages, list):
+            messages = [str(messages)]
+
+        messages = [
+            str(message)
+            for message in messages
+            if message is not None and str(message).strip()
+        ]
+        logger.info("[13] 사용자 메시지 생성 완료")
+    except Exception:
+        logger.exception(
+            "[13] 사용자 메시지 생성 실패 - 기본 안내문을 사용합니다."
+        )
+        messages = [
+            f"총 이동거리는 약 {summary.get('distance_km', 0)}km입니다.",
+            (
+                f"예상 이동시간은 약 "
+                f"{summary.get('duration_minutes', 0)}분입니다."
+            ),
+            "일부 상세 분석이 지연되어 기본 경로 정보를 제공합니다.",
+        ]
+
+    log_step("[13] 사용자 메시지 생성 단계 종료")
 
     with _state_lock:
         _latest_route_context = {
@@ -478,9 +661,7 @@ def analyze_route(
             "summary": dict(summary),
         }
 
-    logger.info("[14] 경로 분석 응답 생성 완료")
-
-    return {
+    response_payload = {
         "origin": origin,
         "destination": destination,
         "summary": summary,
@@ -498,6 +679,14 @@ def analyze_route(
         },
     }
 
+    response_payload = _json_safe(response_payload)
+    logger.info(
+        "[14] 경로 분석 응답 생성 완료 - 전체 %.2f초",
+        time.perf_counter() - request_started_at,
+    )
+
+    return response_payload
+
 
 @app.get("/")
 def root():
@@ -514,10 +703,15 @@ def health():
         route_ready = _latest_route_context is not None
         driving_active = _live_controller is not None
 
+    with _data_cache_lock:
+        loaded_cache_keys = sorted(_data_cache.keys())
+
     return {
         "status": "ok",
         "route_ready": route_ready,
         "driving_active": driving_active,
+        "statistics_cache_policy": sorted(_data_cache_keys),
+        "statistics_cache_loaded": loaded_cache_keys,
     }
 
 
@@ -526,6 +720,13 @@ def health():
     response_model=RouteAnalysisResponse,
 )
 def analyze_route_endpoint(request: RouteAnalysisRequest):
+    logger.info(
+        "POST /analyze-route 요청 수신: origin=%r, destination=%r, weather=%s",
+        request.origin,
+        request.destination,
+        request.weather,
+    )
+
     try:
         return analyze_route(
             origin_text=request.origin.strip(),
