@@ -588,7 +588,7 @@ def _reduce_timeline(
 def _filter_links_by_route_bounds(
     links: list[dict[str, Any]],
     timeline: list[dict[str, float]],
-    margin_degrees: float = 0.012,
+    margin_degrees: float = 0.003,
 ) -> list[dict[str, Any]]:
     """경로 경계에서 멀리 떨어진 링크를 정밀 대조 전에 제외합니다."""
 
@@ -1067,7 +1067,7 @@ def analyze_route_traffic(
     radius_km: float = 1.2,
     maximum_queries: int = 8,
     max_workers: int = 4,
-    max_match_distance_m: float = 250,
+    max_match_distance_m: float = 120,
     start_route_distance_m: float = 0.0,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
