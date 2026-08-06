@@ -585,43 +585,69 @@ def _reduce_timeline(
     return reduced
 
 
-def _filter_links_by_route_bounds(
+def _filter_links_by_route_corridor(
     links: list[dict[str, Any]],
     timeline: list[dict[str, float]],
-    margin_degrees: float = 0.003,
+    corridor_distance_m: float = 700.0,
 ) -> list[dict[str, Any]]:
-    """경로 경계에서 멀리 떨어진 링크를 정밀 대조 전에 제외합니다."""
+    """경로 주변 회랑에서 멀리 떨어진 링크를 정밀 대조 전에 제외합니다.
+
+    기존의 전체 경로 사각형 필터는 장거리 경로에서 사각형 내부의
+    무관한 도로까지 거의 모두 남기는 문제가 있습니다. 각 링크의
+    시작·중간·끝 대표 좌표와 경로 좌표의 근사 거리를 먼저 계산해
+    가까운 링크만 정밀 선분 대조 단계로 넘깁니다.
+    """
 
     if not links or not timeline:
         return []
 
-    route_lons = [float(point["longitude"]) for point in timeline]
-    route_lats = [float(point["latitude"]) for point in timeline]
-
-    min_lon = min(route_lons) - margin_degrees
-    max_lon = max(route_lons) + margin_degrees
-    min_lat = min(route_lats) - margin_degrees
-    max_lat = max(route_lats) + margin_degrees
+    route_points = [
+        (
+            float(point["longitude"]),
+            float(point["latitude"]),
+        )
+        for point in timeline
+    ]
 
     filtered = []
 
     for link in links:
         coordinates = link.get("coordinates", [])
+
         if not coordinates:
             continue
 
-        link_lons = [float(point[0]) for point in coordinates]
-        link_lats = [float(point[1]) for point in coordinates]
+        middle_index = len(coordinates) // 2
+        representative_points = [
+            coordinates[0],
+            coordinates[middle_index],
+            coordinates[-1],
+        ]
 
-        if (
-            max(link_lons) < min_lon
-            or min(link_lons) > max_lon
-            or max(link_lats) < min_lat
-            or min(link_lats) > max_lat
-        ):
-            continue
+        keep_link = False
 
-        filtered.append(link)
+        for link_point in representative_points:
+            link_lon = float(link_point[0])
+            link_lat = float(link_point[1])
+
+            for route_lon, route_lat in route_points:
+                if (
+                    _distance_m(
+                        link_lon,
+                        link_lat,
+                        route_lon,
+                        route_lat,
+                    )
+                    <= corridor_distance_m
+                ):
+                    keep_link = True
+                    break
+
+            if keep_link:
+                break
+
+        if keep_link:
+            filtered.append(link)
 
     return filtered
 
@@ -1067,7 +1093,7 @@ def analyze_route_traffic(
     radius_km: float = 1.2,
     maximum_queries: int = 8,
     max_workers: int = 4,
-    max_match_distance_m: float = 120,
+    max_match_distance_m: float = 250,
     start_route_distance_m: float = 0.0,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
@@ -1176,13 +1202,14 @@ def analyze_route_traffic(
         )
 
     reduced_timeline = _reduce_timeline(timeline)
-    traffic_links = _filter_links_by_route_bounds(
+    traffic_links = _filter_links_by_route_corridor(
         traffic_links,
         reduced_timeline,
+        corridor_distance_m=700.0,
     )
 
     logger.info(
-        "[traffic] 경로 주변 필터 후 features=%d, timeline_points=%d",
+        "[traffic] 경로 회랑 필터 후 features=%d, timeline_points=%d",
         len(traffic_links),
         len(reduced_timeline),
     )
