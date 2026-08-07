@@ -452,7 +452,7 @@ def _format_type_message(route_type_detail):
     safety_message = create_safety_message(accident_type)
 
     return (
-        f"경로 지역에서는 '{accident_type}' 사고가 가장 많습니다. "
+        f"경로 지역에서는 '{_display_accident_type(accident_type)}' 사고가 가장 많습니다. "
         f"{safety_message}"
     )
 
@@ -506,11 +506,57 @@ def _format_weather_message(
 def _format_condition_message(
     current_time_band,
     weather,
+    route_time_result=None,
+    route_weather_result=None,
 ):
-    return (
-        f"현재 주행 조건은 {current_time_band}, {weather}입니다. "
-        f"{create_condition_safety_message(weather, current_time_band)}"
+    """현재 조건 + TAAS 시간대/날씨 통계를 한 문장으로 요약합니다."""
+
+    statistics = []
+
+    if _is_available(route_time_result):
+        value_column = "지역내_사고비중(%)"
+
+        if value_column in route_time_result.columns:
+            top_time = route_time_result.sort_values(
+                by=value_column,
+                ascending=False,
+            ).iloc[0]
+
+            statistics.append(
+                f"{current_time_band} 기준 경로 지역 중 "
+                f"{top_time['시도']}의 지역 내 사고 비중이 "
+                f"{float(top_time[value_column]):.1f}%로 가장 높습니다"
+            )
+
+    if _is_available(route_weather_result):
+        value_column = "지역내_사고비중(%)"
+
+        if value_column in route_weather_result.columns:
+            top_weather = route_weather_result.sort_values(
+                by=value_column,
+                ascending=False,
+            ).iloc[0]
+
+            statistics.append(
+                f"{weather} 조건에서는 경로 지역 중 "
+                f"{top_weather['시도']}의 지역 내 사고 비중이 "
+                f"{float(top_weather[value_column]):.1f}%로 가장 높습니다"
+            )
+
+    message = f"현재 주행 조건은 {current_time_band}, {weather}입니다."
+
+    if statistics:
+        message += " " + ". ".join(statistics) + "."
+
+    message += (
+        " "
+        + create_condition_safety_message(
+            weather,
+            current_time_band,
+        )
     )
+
+    return message
 
 
 def create_user_messages(
@@ -547,23 +593,44 @@ def create_user_messages(
         )
     )
 
-    candidates = [
-        _format_risk_message(
-            regions,
-            route_type_detail=route_type_detail,
-        ),
-        _format_condition_message(
-            current_time_band,
-            weather,
-        ),
-        _format_road_message(
+    risk_message = _format_risk_message(
+        regions,
+        route_type_detail=route_type_detail,
+    )
+
+    if risk_message and risk_message not in messages:
+        messages.append(risk_message)
+
+    # 시간대·날씨 분석 결과를 실제 사용자 안내에 포함합니다.
+    # 두 통계를 각각 한 문장으로 추가하면 출력이 지나치게 길어지므로
+    # 현재 주행조건 안내와 합쳐 한 문장으로 제공합니다.
+    condition_message = _format_condition_message(
+        current_time_band,
+        weather,
+        route_time_result=route_time_result,
+        route_weather_result=route_weather_result,
+    )
+
+    if condition_message not in messages:
+        messages.append(condition_message)
+
+    # 기존 출력에서 중요하게 사용하던 주요 도로종류 안전수칙은
+    # 정체 문장이 2개여도 밀려나지 않도록 우선 유지합니다.
+    if len(messages) < 6:
+        road_message = _format_road_message(
             route_road_summary,
             route_road_result,
-        ),
-    ]
+        )
 
-    for message in candidates:
-        if message and message not in messages:
-            messages.append(message)
+        if road_message and road_message not in messages:
+            messages.append(road_message)
+
+    # 사고유형 정보는 정체/모델 위험도 안내에 이미 포함되는 경우가 많으므로
+    # 출력 자리가 남는 경우에만 독립 문장으로 추가합니다.
+    if len(messages) < 6 and not risk_message:
+        type_message = _format_type_message(route_type_detail)
+
+        if type_message and type_message not in messages:
+            messages.append(type_message)
 
     return messages[:6]
